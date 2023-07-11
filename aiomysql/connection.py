@@ -831,7 +831,7 @@ class Connection:
         self.write_packet(data)
         auth_packet = await self._read_packet()
 
-        while auth_packet.is_auth_switch_request() or auth_packet.is_extra_auth_data():
+        while not auth_packet.is_ok_packet():
             # if authentication method isn't accepted the first byte
             # will have the octet 254
             if auth_packet.is_auth_switch_request():
@@ -849,9 +849,16 @@ class Connection:
                     auth_packet.read_all()
                 )
             else:
-                auth_packet.read_uint8()  # 0x01 packet identifier
+                if tuple(int(i) for i in self.server_version.split('.')) < (5, 5, 16):
+                    auth_data = auth_packet.read_all()
+                elif auth_packet.is_extra_auth_data():
+                    auth_packet.read_uint8()  # 0x01 packet identifier
+                    auth_data = auth_packet.read_all()
+                else:
+                    raise OperationalError("Unexpected packet from server during auth")
+
                 try:
-                    authresp = await authstate.asend(auth_packet.read_all())
+                    authresp = await authstate.asend(auth_data)
                 except StopAsyncIteration:
                     raise OperationalError("Received extra packet "
                                            "for auth method %r", self._auth_plugin_used)
@@ -867,6 +874,7 @@ class Connection:
         auth_info = AuthInfo(
             password=self._password,
             secure=self._secure,
+            server_plugin=self._server_auth_plugin,
             conn=self,
         )
         authresp, authstate = await plugin.start(auth_info, data)
